@@ -1,7 +1,5 @@
 /**
- * 生成指定长度的随机字符串，用于文件名
- * @param {number} length - 字符串长度
- * @returns {string}
+ * 生成指定长度的随机字符串
  */
 function generateRandomString(length) {
   const characters = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -12,61 +10,62 @@ function generateRandomString(length) {
   return result;
 }
 
-/**
- * 处理POST请求的核心函数
- */
 export async function onRequestPost(context) {
   try {
     const { request, env } = context;
+
+    // 步骤 1: 严格检查所有环境变量配置
+    if (!env.IMG) {
+      return new Response('Server Configuration Error: R2 binding for "IMG" is missing.', { status: 500 });
+    }
+    if (!env.R2_PUBLIC_URL) {
+      return new Response('Server Configuration Error: "R2_PUBLIC_URL" is not set.', { status: 500 });
+    }
+    if (!env.AUTH_KEY) {
+      return new Response('Server Configuration Error: "AUTH_KEY" is not set.', { status: 500 });
+    }
+
+    // 步骤 2: 认证
     const { searchParams } = new URL(request.url);
+    const authKey = env.AUTH_KEY;
+    const clientKey = request.headers.get('Authorization') || searchParams.get('authCode');
 
-    // 1. 验证认证码 (兼容请求头和URL参数)
-    const authKey = env.AUTH_KEY; // 从环境变量获取预设的密码
-
-    // 优先从 'Authorization' 请求头获取
-    let clientKey = request.headers.get('Authorization');
-
-    // 如果请求头没有，则尝试从 'authCode' URL参数获取
-    if (!clientKey) {
-      clientKey = searchParams.get('authCode');
+    if (clientKey !== authKey) {
+      return new Response('Unauthorized. The provided key does not match.', { status: 401 });
     }
 
-    // 如果没有设置密码，或者客户端密码不匹配，则拒绝访问
-    if (!authKey || clientKey !== authKey) {
-        const errorMessage = `Unauthorized. Server requires an AUTH_KEY, but the provided key was invalid or missing. Received: ${clientKey ? 'a key' : 'nothing'}.`;
-        return new Response(errorMessage, { status: 401 });
-    }
-
-    // 2. 获取 R2 的公开访问 URL
-    const publicUrl = env.R2_PUBLIC_URL;
-    if (!publicUrl) {
-        return new Response('R2_PUBLIC_URL environment variable is not set', { status: 500 });
-    }
-
-    // 3. 处理上传的文件
+    // 步骤 3: 处理上传的文件数据
     const blob = await request.blob();
-    const contentType = request.headers.get('content-type') || 'image/png';
-    const fileExtension = contentType.split('/')[1] || 'png';
+    if (blob.size === 0) {
+        return new Response('Bad Request: Uploaded file is empty.', { status: 400 });
+    }
 
-    // 4. 生成唯一文件名
+    // 步骤 4: 生成唯一文件名
+    const effectiveContentType = blob.type || 'image/png';
+    const fileExtension = effectiveContentType.split('/')[1] || 'png';
     const date = new Date();
     const dateStr = date.toISOString().split('T')[0].replace(/-/g, '');
     const randomStr = generateRandomString(8);
     const fileName = `${dateStr}-${randomStr}.${fileExtension}`;
 
-    // 5. 将文件上传到 R2 存储桶
-    await env.IMG.put(fileName, blob, {
-      httpMetadata: { contentType },
-    });
+    // 步骤 5: 上传到 R2
+    try {
+        await env.IMG.put(fileName, blob, {
+            httpMetadata: { contentType: effectiveContentType },
+        });
+    } catch (r2Error) {
+        console.error('R2 Put Error:', r2Error);
+        return new Response(`Failed to upload to R2 Storage: ${r2Error.message}`, { status: 500 });
+    }
 
-    // 6. 构造并返回图片外链 (适配 gemini-balance 的返回格式)
+    // 步骤 6: 返回一个更简单的成功响应
+    const publicUrl = env.R2_PUBLIC_URL;
     const imageUrl = `${publicUrl.endsWith('/') ? publicUrl.slice(0, -1) : publicUrl}/${fileName}`;
+    
+    // --- 这是本次唯一的修改 ---
+    // 直接返回包含 url 的简单对象
     const responseBody = {
-        code: 200,
-        message: "success",
-        data: {
-            url: imageUrl
-        }
+        url: imageUrl
     };
 
     return new Response(JSON.stringify(responseBody), {
@@ -74,7 +73,7 @@ export async function onRequestPost(context) {
     });
 
   } catch (error) {
-    console.error('Upload Error:', error);
-    return new Response(`Server Error: ${error.message}`, { status: 500 });
+    console.error('General Upload Script Error:', error);
+    return new Response(`An unexpected error occurred: ${error.message}\n${error.stack}`, { status: 500 });
   }
 }
