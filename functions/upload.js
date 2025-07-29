@@ -18,16 +18,23 @@ function generateRandomString(length) {
 export async function onRequestPost(context) {
   try {
     const { request, env } = context;
+    const { searchParams } = new URL(request.url);
 
-    // 1. 验证认证码
-    // 从环境变量中获取预设的密码
-    const authKey = env.AUTH_KEY;
-    // 从请求头中获取客户端传来的密码
-    const clientKey = request.headers.get('Authorization');
+    // 1. 验证认证码 (兼容请求头和URL参数)
+    const authKey = env.AUTH_KEY; // 从环境变量获取预设的密码
+
+    // 优先从 'Authorization' 请求头获取
+    let clientKey = request.headers.get('Authorization');
+
+    // 如果请求头没有，则尝试从 'authCode' URL参数获取
+    if (!clientKey) {
+      clientKey = searchParams.get('authCode');
+    }
 
     // 如果没有设置密码，或者客户端密码不匹配，则拒绝访问
     if (!authKey || clientKey !== authKey) {
-      return new Response('Unauthorized', { status: 401 });
+        const errorMessage = `Unauthorized. Server requires an AUTH_KEY, but the provided key was invalid or missing. Received: ${clientKey ? 'a key' : 'nothing'}.`;
+        return new Response(errorMessage, { status: 401 });
     }
 
     // 2. 获取 R2 的公开访问 URL
@@ -42,7 +49,6 @@ export async function onRequestPost(context) {
     const fileExtension = contentType.split('/')[1] || 'png';
 
     // 4. 生成唯一文件名
-    // 格式：日期(YYYYMMDD)-随机字符串.扩展名
     const date = new Date();
     const dateStr = date.toISOString().split('T')[0].replace(/-/g, '');
     const randomStr = generateRandomString(8);
@@ -53,10 +59,8 @@ export async function onRequestPost(context) {
       httpMetadata: { contentType },
     });
 
-    // 6. 构造并返回图片外链
+    // 6. 构造并返回图片外链 (适配 gemini-balance 的返回格式)
     const imageUrl = `${publicUrl.endsWith('/') ? publicUrl.slice(0, -1) : publicUrl}/${fileName}`;
-    
-    // Gemini Balance 项目需要特定的 JSON 格式返回
     const responseBody = {
         code: 200,
         message: "success",
